@@ -1,0 +1,503 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <strings.h>
+#include <stdbool.h>
+#include <time.h>
+
+#define BUFFER_SIZE 1024
+#define RAD "\033[0;31m"
+#define RESET_COLOR "\033[0m"
+#define HELP "0 - вывод текста после первичной обязательной обработки.\n1 - Вывести все предложения в которых есть даты в формате “DD/MM/YYYY”, даты которые еще не наступили надо выделить красным цветом.\n2 - Удалить все предложения в которых каждое слово содержит нечетное количество букв.\n3 - Преобразовать предложения так, чтобы перед каждым словом стояло количество букв в нем. Например, для предложения “57 ab:e r4” результатом будет “57 3ab:e 1r4”.\n4 - Отсортировать предложения по возрастанию длины последнего слова."
+#define INFO "Course work for option 4.5, created by Dmitry Baranov."
+#define ERROR "Error: данной операции не существует в программе."
+#define MEM_ERROR "Error: Failed to allocate memory\n"
+#define END_OF_STRING '\0'
+
+char** get_words(char* text, size_t len, size_t *words_count);
+char** get_seps(char* text, size_t len, size_t *seps_count);
+void smart_realloc_for_td_arr(char*** str, size_t len);
+void smart_realloc(char** str, size_t len);
+void print_info();
+char* input_text(int*);
+char** split_into_sentences(char*, int);
+char** remove_duplicate_sentences(char**, int*);
+void text_formatting(int, char**, int);
+int menu();
+char** filter_sentences_with_odd_words(char **sentences, int num_sentences, int *new_num_sentences);
+int has_odd_letters(char *word);
+char* strdup(const char *src);
+void panic(char* error_message);
+char* add_letter_count(char* sentence);
+size_t letters_count(char* word);
+bool is_separator(char c);
+bool is_word_first(char *text);
+void realloc_and_add(char **text, char *add, size_t *len);
+int compare_sentences(const void *a, const void *b);
+char** letters_for_sentences(char** sentences, size_t len);
+void free_td_arr(char **arr, size_t len);
+bool find_date(char* sentence, size_t** indexes, bool** flags,size_t *len);
+bool check_date(char str[11], struct tm *tm_date);
+void color_dates(char** sentences, size_t sen_count);
+int in_arr(size_t ind, size_t *arr, size_t len);
+
+int in_arr(size_t ind, size_t *arr, size_t len){
+    for (size_t i = 0; i < len; i++){
+        if (ind == arr[i])
+            return i;
+    }
+    return -1;
+}
+
+void color_dates(char** sentences, size_t sen_count){
+    size_t *indexes, len;
+    bool *flags;
+    int ind1, ind2;
+
+    for (size_t i = 0; i < sen_count; i++){
+        indexes = NULL;
+        flags = NULL;
+        len = 0;
+        if(find_date(sentences[i], &indexes, &flags, &len)){
+            for(size_t j = 0; j < strlen(sentences[i]); j++){
+                ind1 = in_arr(j, indexes, len);
+                ind2 = in_arr(j-9, indexes, len);
+                if (ind1>=0 && !flags[ind1])
+                    printf("\033[1;31m");
+                printf("%c", sentences[i][j]);
+                if (ind2>=0 && !flags[ind2])
+                    printf("\033[0m");
+            }
+            printf(".\n");
+        }
+    }
+}
+
+
+bool check_date(char str[11], struct tm *tm_date){
+    size_t c1, c2;
+    c2 = 0;
+    c1 = (size_t)(str[2]=='/')+(size_t)(str[5]=='/');
+    for (size_t i = 0; i<10; i++)
+        c2 += (size_t)((bool)isdigit(str[i]));
+    
+    if (!((c1==2)&&(c2==8)))
+        return false;
+    
+    tm_date->tm_isdst = -1;
+    tm_date->tm_year = 1000*(str[6]-'0')+100*(str[7]-'0')+10*(str[8]-'0')+1*(str[9]-'0')-1900;
+    tm_date->tm_mon  = 10*(str[0]-'0')+1*(str[1]-'0')-1;
+    tm_date->tm_mday = 10*(str[3]-'0')+1*(str[4]-'0');
+    tm_date->tm_hour = 0;
+    tm_date->tm_min  = 0;
+    tm_date->tm_sec  = 0;
+
+    return true;
+}
+
+bool find_date(char* sentence, size_t** indexes, bool** flags,size_t *len){
+    struct tm tm_date = {0};
+    size_t ttime;
+    time_t timestamp, cur_time;
+
+    cur_time = time(NULL);
+
+    char clone[11];
+    clone[10] = END_OF_STRING;
+    (*indexes) = NULL;
+    (*flags) = NULL;
+    *len = 0;
+
+    for (size_t i = 0; i < strlen(sentence)-9; i++){
+        for (size_t j = 0; j < 10; j++)
+            clone[j] = sentence[i+j];
+        if(check_date(clone, &tm_date)){
+            timestamp = mktime(&tm_date);
+            (*indexes) = realloc((*indexes), sizeof(size_t)*(*len+1));
+            (*flags) = realloc((*flags), sizeof(bool)*(*len+1));
+            (*indexes)[*len] = i;
+            (*flags)[*len] = (bool)(cur_time >= timestamp);
+            (*len)++;
+        }
+    }
+
+    return *len > 0;
+}
+
+void free_td_arr(char **arr, size_t len){
+    for (size_t i = 0; i < len; i++)
+        free(arr[i]);
+
+    free(arr);
+}
+
+void realloc_and_add(char **text, char *add, size_t *len){
+    *text = realloc(*text, (*len + strlen(add)) * sizeof(char));
+    if (!(*text))
+        panic(MEM_ERROR);
+
+    for (size_t k = 0; k < strlen(add); k++){
+        (*text)[(*len)++] = add[k];
+    }
+}
+
+bool is_separator(char c){
+    return strchr(" ,", c) && c != END_OF_STRING;
+}
+
+bool is_word_first(char *text){
+    return !is_separator(text[0]);
+}
+
+void panic(char* error_message){
+    printf("%s\n", error_message);
+    exit(0);
+}
+
+char* strdup(const char *src) {
+    char *dst;
+    dst = malloc(strlen(src) + 1);
+    if (dst == NULL) return NULL;
+    strcpy(dst, src);
+    return dst;
+}
+
+int main() {
+    menu();
+    return 0;
+}
+
+int menu() {
+    print_info();
+    int total_sentences = 0, chosen_task;
+    scanf("%d", &chosen_task);
+    if (chosen_task == 5) {
+        puts(HELP);
+        return 0;
+    }
+    else if (chosen_task < 0 || chosen_task > 5) {
+        puts(ERROR);
+        return 0;
+    }
+    char* text = input_text(&total_sentences);
+    char** sentences = split_into_sentences(text, total_sentences);
+    char** unique_sentences = remove_duplicate_sentences(sentences, &total_sentences);
+    text_formatting(chosen_task, unique_sentences, total_sentences);
+    free(text);
+}
+
+void print_info() {
+    puts(INFO);
+}
+
+void text_formatting(int chosen_task, char** unique_sentences, int total_sentences) {
+    int new_num_sentences;
+    char** new_sentences;
+    switch (chosen_task) {
+        case 0:
+            for (int i = 0; i < total_sentences; i++) {
+                printf("%s.\n", unique_sentences[i]);
+            }
+            break;
+        case 1:
+            color_dates(unique_sentences, total_sentences);
+            break;
+        case 2:
+            new_sentences = filter_sentences_with_odd_words(unique_sentences, total_sentences, &new_num_sentences);
+            for (int i = 0; i < new_num_sentences; i++) {
+                printf("%s.\n", new_sentences[i]);
+            }
+            break;
+        case 3:
+            new_sentences = letters_for_sentences(unique_sentences, total_sentences);
+            for (int i = 0; i < total_sentences; i++) {
+                printf("%s.\n", new_sentences[i]);
+            }
+            break;
+        case 4:
+            qsort(unique_sentences, total_sentences, sizeof(char*), compare_sentences);
+            for (int i = 0; i < total_sentences; i++) {
+                printf("%s.\n", unique_sentences[i]);
+            }
+            break;
+    }
+}
+
+char* input_text(int* len) {
+    char* text = (char*)calloc(BUFFER_SIZE, sizeof(char));
+    int current_size = BUFFER_SIZE;
+    int i = 0;
+    char c;
+
+    while (1) {
+        c = getchar();
+        if (c == '\n' && i == 0) {
+            continue;
+        }
+        text[i++] = c;
+        if (i == current_size - 1) {
+            current_size += BUFFER_SIZE;
+            char* temp = realloc(text, current_size*sizeof(char));
+            text = temp;
+        }
+        if (c == '.'){
+            (*len)++;
+        }
+        if (i >= 2 && text[i-2] == '\n' && text[i-1] == '\n') {
+            break;
+        }
+    }
+
+    text[i-2] = '\0';
+    return text;
+}
+
+char** split_into_sentences(char* text, int count) {
+    char **sentences = (char**)calloc(count, sizeof(char*));
+    int capacity = BUFFER_SIZE;
+    int i = 0;
+
+    char *sentence = strtok(text, ".");
+    while (sentence != NULL) {
+        if (i >= capacity) {
+            capacity *= 2;
+            sentences = realloc(sentences, sizeof(char*) * capacity);
+        }
+        if (sentence[0] == ' ' || sentence[0] == '\t' || sentence[0] == '\n') {
+            sentence++;
+        }
+        sentences[i++] = sentence;
+        sentence = strtok(NULL, ".");
+    }
+    return sentences;
+}
+
+char** remove_duplicate_sentences(char** sentences, int* len) {
+    char** del_sentences = (char**)calloc(*len, sizeof(char*));
+    int index = 0;
+    del_sentences[index++] = sentences[0];
+    for (int i = 1; i < *len; ++i) {
+        int is_duplicate = 0;
+        for (int j = 0; j < index; ++j) {
+            if (strcasecmp(sentences[i], del_sentences[j]) == 0) {
+                is_duplicate = 1;
+                break;
+            }
+        }
+        if (!is_duplicate) {
+            del_sentences[index++] = sentences[i];
+        }
+    }
+    *len = index;
+    return del_sentences;
+}
+
+
+int has_odd_letters(char *word) {
+    return strlen(word) % 2 != 0;
+}
+
+void smart_realloc_for_td_arr(char*** str, size_t len){
+    if ((len % BUFFER_SIZE) == 0){
+        *str = realloc(*str, (len + BUFFER_SIZE) * sizeof(char*));
+        if (!(*str)) panic(MEM_ERROR);
+    }
+}
+
+void smart_realloc(char** str, size_t len){
+    if ((len % BUFFER_SIZE) == 0){
+        *str = realloc(*str, (len + BUFFER_SIZE) * sizeof(char));
+        if (!(*str)) panic(MEM_ERROR);
+    }
+}
+
+char** filter_sentences_with_odd_words(char **sentences, int num_sentences, int *new_num_sentences) {
+    char** new_sentences = (char**)malloc(num_sentences * sizeof(char*));
+    if (!new_sentences) {
+        panic(MEM_ERROR);
+    }
+
+    int count = 0;
+    for (int i = 0; i < num_sentences; ++i) {
+        char *sentence = sentences[i];
+        char *token = strtok(strdup(sentence), " ,.");
+        int all_words_have_odd_letters = 1;
+
+        while (token != NULL) {
+            if (!has_odd_letters(token)) {
+                all_words_have_odd_letters = 0;
+                break;
+            }
+            token = strtok(NULL, " ,.");
+        }
+
+        if (!all_words_have_odd_letters) {
+            new_sentences[count] = strdup(sentence);
+            if (!new_sentences[count]) {
+                panic(MEM_ERROR);
+            }
+            ++count;
+        }
+    }
+
+    *new_num_sentences = count;
+    return new_sentences;
+}
+
+char** get_words(char* text, size_t len, size_t *words_count){
+    char **words = NULL;
+    char *current_word = NULL;
+    size_t j;
+
+    *words_count = 0;
+    j = 0;
+
+
+    for (size_t i = 0; i < len; i++){
+        if (is_separator(text[i]) && j){
+            smart_realloc_for_td_arr(&words, *words_count);
+            smart_realloc(&current_word, j);
+            current_word[j++] = END_OF_STRING;
+            words[(*words_count)++] = strdup(current_word);
+            free(current_word);
+            current_word = NULL;
+            j = 0;
+        }
+        else{
+            if (is_separator(text[i]))
+                continue;
+
+            smart_realloc(&current_word, j);
+            current_word[j++] = text[i];
+        }
+    }
+
+    if (j){
+        smart_realloc_for_td_arr(&words, *words_count);
+        smart_realloc(&current_word, j);
+        current_word[j++] = END_OF_STRING;
+        words[(*words_count)++] = strdup(current_word);
+        free(current_word);
+        j = 0;
+    }
+
+    return words;
+}
+
+char** get_seps(char* text, size_t len, size_t *seps_count){
+    char **seps = NULL;
+    char *current_sep = NULL;
+    size_t j = 0;
+
+    *seps_count = 0;
+    j = 0;
+
+    for (size_t i = 0; i < len; i++){
+        if (!is_separator(text[i]) && j){
+            smart_realloc_for_td_arr(&seps, *seps_count);
+            smart_realloc(&current_sep, j);
+            current_sep[j++] = END_OF_STRING;
+            seps[(*seps_count)++] = strdup(current_sep);
+            free(current_sep);
+            current_sep = NULL;
+            j = 0;
+        }
+        else{
+            if(!is_separator(text[i]))
+                continue;
+
+            smart_realloc(&current_sep, j);
+            current_sep[j++] = text[i];
+        }
+    }
+
+    if (j){
+        smart_realloc_for_td_arr(&seps, *seps_count);
+        smart_realloc(&current_sep, j);
+        current_sep[j++] = END_OF_STRING;
+        seps[(*seps_count)++] = strdup(current_sep);
+        free(current_sep);
+        j = 0;
+    }
+
+    return seps;
+}
+
+size_t letters_count(char* word){
+    size_t count = 0;
+    for (size_t i = 0; word[i]; i++)
+        count += (size_t)((bool)isalpha(word[i]));
+    
+    return count;
+}
+
+
+char* add_letter_count(char* sentence){
+    size_t words_count, seps_count, letter_c, new_len;
+    size_t i,j;
+    char** words = get_words(sentence, strlen(sentence), &words_count);
+    char** seps = get_seps(sentence, strlen(sentence), &seps_count);
+
+    char* new_sentence = NULL;
+
+    char str_letter_c[1000];
+
+    i = 0;
+    j = 0;
+    new_len = 0;
+
+    if (!is_word_first(sentence) && seps_count){
+        realloc_and_add(&new_sentence, seps[j], &new_len);
+        j++;
+    }
+    
+    while (i < words_count || j < seps_count){
+        if (i < words_count){
+            
+            letter_c = letters_count(words[i]);
+            if (letter_c > 0){
+            sprintf(str_letter_c, "%ld", letter_c);
+            realloc_and_add(&new_sentence, str_letter_c, &new_len);
+            }
+            
+            realloc_and_add(&new_sentence, words[i], &new_len);
+            i++;
+        }
+        if (j < seps_count){
+            realloc_and_add(&new_sentence, seps[j], &new_len);
+            j++;
+        }
+    }
+
+    return new_sentence;
+}
+
+
+char** letters_for_sentences(char** sentences, size_t len){
+    char** new_sentences = NULL;
+    for (size_t i = 0; i < len; i++){
+        smart_realloc_for_td_arr(&new_sentences, i);
+        new_sentences[i] = add_letter_count(sentences[i]);
+    }
+
+    return new_sentences;
+}
+
+int compare_sentences(const void *a, const void *b) {
+    char* sentence_a = *(char **)a;
+    char* sentence_b = *(char **)b;
+    size_t len_last_word_a, len_last_word_b, words_count_a, words_count_b;
+    char** words_a;
+    char** words_b;
+    words_a = get_words(sentence_a, strlen(sentence_a), &words_count_a);
+    len_last_word_a = strlen(words_a[words_count_a-1]);
+
+    words_b = get_words(sentence_b, strlen(sentence_b), &words_count_b);
+    len_last_word_b = strlen(words_b[words_count_b-1]);
+
+
+    free_td_arr(words_a, words_count_a);
+    free_td_arr(words_b, words_count_b);
+    return len_last_word_a - len_last_word_b;
+}
